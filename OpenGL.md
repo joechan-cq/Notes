@@ -1,39 +1,159 @@
 # OpenGL 笔记
 
-## 基础开发注意点
+## Android下创建OpenGL环境
 
-* OpenGL部件一般由OpeGL程序+着色器组成。
+### 使用GLSurfaceView
 
-* 着色器中必须要知道，分为处理坐标的**顶点着色器**和处理颜色的**片元着色器**。
+**1. 继承GLSurfaceView**
 
-* 使用顶点着色器接收顶点坐标（FloatBuffer）时，注意指针置0：`floatBuffer.position(0);`，不然只有第一次能读取到坐标。
+``` java
+public class MyGLSurfaceView extends GLSurfaceView {
+    private final MyGLRenderer mRenderer;
+ 
+    public MyGLSurfaceView(Context context) {
+        super(context);
+        // Create an OpenGL ES 2.0 context
+        setEGLContextClientVersion(2);
+        mRenderer = new MyGLRenderer();
+        setRenderer(mRenderer);
+    }
+}
+```
 
-* 必须创建和使用**多个openGL程序**来进行不同图层的绘制，否则一些变量对象的变化，会影响之前的绘制。
+**2. 实现GLSurfaceView.Renderer接口**
 
-* OpenGL的坐标，是以绘制区域中心为原点，上、右为正方向，范围为[-1, -1, 1 ,1]的坐标轴。 
+``` java
+public class MyGLRenderer implements GLSurfaceView.Renderer {
+    @Override
+    public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+        // 设置清除屏幕所用的颜色
+        GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
+    @Override
+    public void onDrawFrame(GL10 gl) {
+        // 清除屏幕
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+    }
+
+    @Override
+    public void onSurfaceChanged(GL10 gl, int width, int height) {
+        // 设置视口
+        GLES20.glViewport(0, 0, width, height);
+    }
+}
+```
+
+在自定义Render中就拥有了OpenGL环境，即可使用OpenGL进行开发。
+
+### 手动创建EGL环境
+
+EGL是一个接口层，用于连接渲染API（例如OpenGL ES）和本地窗口系统。
+
+创建一个EGL环境，需要顺序调用以下的API：
+
+1. eglGetDisplay
+2. eglInitialize
+3. eglChooseConfig
+4. eglCreateContext
+5. eglCreateWindowSurface或eglCreatePBufferSurface或eglCreatePixmapSurface
+6. eglMakeCurrent
+7. eglSwapBuffers
+
+#### eglGetDisplay
+
+用户获取屏幕显示设备句柄
+
+```  java
+EGLDisplay display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+```
+
+#### eglInitialize
+
+初始化EGL
+
+``` java
+int[] version = new int[2]; //用于存储获取到的EGL版本，[0]主版本号，[1]次版本号
+EGL14.eglInitialize(display, version, 0, version, 1);
+```
+
+#### eglChooseConfig
+
+根据一些配置参数，获取当前EGL所支持的最佳配置
+
+``` java
+int[] configAttribs = {
+    EGL14.EGL_RED_SIZE, 8,
+    EGL14.EGL_GREEN_SIZE, 8,
+    EGL14.EGL_BLUE_SIZE, 8,
+    EGL14.EGL_ALPHA_SIZE, 8,
+    EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+    EGL14.EGL_NONE
+}; //基础配置参数
+EGLConfig[] configs = new EGLConfig[1];
+int[] numConfigs = new int[1];
+//获取满足基础配置参数的具体配置
+EGL14.eglChooseConfig(display, configAttribs, 0, configs, 0, configs.length, numConfigs, 0);
+EGLConfig eglConfig = configs[0];
+```
+
+#### eglCreateContext
+
+创建EGL上下文。如果需要实现EGL线程之间资源共享，那么在创建上下文时，就需要传入其它需要共享的上下文。
+
+``` java
+int[] contextAttribs = {
+    EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
+    EGL14.EGL_NONE
+};
+EGLContext eglContext = EGL14.eglCreateContext(display, eglConfig, EGL14.EGL_NO_CONTEXT, contextAttribs, 0);
+```
+
+#### eglCreateWindowSurface
+
+创建渲染数据载体，这里用windowSurface做例子，根据不同用户，也会用到其他的。
+
+``` java
+Surface surface = ...; // 获取或创建一个 Android Surface
+int[] surfaceAttribs = {
+    EGL14.EGL_NONE
+};
+// 创建一个 EGLSurface，关联到一个 Android Surface。
+EGLSurface eglSurface = EGL14.eglCreateWindowSurface(display, eglConfig, surface, surfaceAttribs, 0);
+```
+
+这里就是将其他地方获取的surface关联到EGLSurface上去，这样EGL所绘制的内容也就能输出到这个surface上去了。
+
+#### eglMakeCurrent
+
+到上一步为止，EGL环境就已经配置完毕了。这个`eglMakeCurrent`是在渲染前，将`EGLSurface`、`EGLContext`、`EGLDisplay`进行绑定的。相当于告诉EGL，我接下来要在这些东西上面进行绘制和输出。
+
+#### eglSwapBuffers
+
+EGL的工作模式是**双缓冲**的，所以代码所绘制的内容，并不会直接到屏幕上去，而是在一个缓冲里，需要调用该方法，才能将缓冲里的内容，正式输出到屏幕上去。
 
 ## 着色器内建变量及含义
 
 ##### 顶点着色器内建变量
 
-| 内建变量           | 作用                                                     | 精度    |
-| -------------- | ------------------------------------------------------ | ----- |
-| gl_VertexID    | 当前被处理的顶点的索引                                            | highp |
-| gl_InstanceID  | 当前被渲染的实例编号                                             | highp |
+| 内建变量       | 作用                                                         | 精度  |
+| -------------- | ------------------------------------------------------------ | ----- |
+| gl_VertexID    | 当前被处理的顶点的索引                                       | highp |
+| gl_InstanceID  | 当前被渲染的实例编号                                         | highp |
 | gl_Position    | 输出顶点位置(如果在 vertex shader 中没有写入 gl_Position，那么它的值是未定义的) | highp |
-| gl_PointSize   | 指定栅格化点的直径                                              | highp |
-| gl_FrontFacing | 内建只读变量,根据顶点位置和图元类型自动生成,如果属于一个当前图元，那么这个值就为true          |       |
+| gl_PointSize   | 指定栅格化点的直径                                           | highp |
+| gl_FrontFacing | 内建只读变量,根据顶点位置和图元类型自动生成,如果属于一个当前图元，那么这个值就为true |       |
 
 ##### 片元着色器内建变量
 
-| 内建变量           | 作用                                          |
-| -------------- | ------------------------------------------- |
+| 内建变量       | 作用                                                         |
+| -------------- | ------------------------------------------------------------ |
 | gl_FragCoord   | 内建只读变量，它保存了片元相对窗口的坐标位置：x, y, z, 1/w处理的顶点的索引 |
-| gl_FrontFacing | 内建只读变量，如果当前片段是正向面的一部分那么就是true，否则就是false     |
-| gl_PointCoord  | 内建只读变量，它的值是当前片元所在**点图元**的二维坐标               |
-| gl_FragDepth   | 内建，深度值                                      |
+| gl_FrontFacing | 内建只读变量，如果当前片段是正向面的一部分那么就是true，否则就是false |
+| gl_PointCoord  | 内建只读变量，它的值是当前片元所在**点图元**的二维坐标       |
+| gl_FragDepth   | 内建，深度值                                                 |
 
-## 如何实现对GLSurfaceView的录制
+## 如何实现对GLSurfaceView的录制(FBO)
 
 使用FBO离屏渲染的方式，将所有绘制操作，都先会知道离屏缓存中去，然后将这份缓存，画一份到surfaceview上，再画一份到mediarecorder的surface上就可以。 
 
@@ -264,3 +384,15 @@ GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureHandles[0]);
 //这里的参数1，对应GL_TEXTURE1，如果是0，对应GL_TEXTURE0，2对应GL_TEXTURE2
 GLES20.glUniform1i(vTexture, 1);
 ```
+
+## PS.
+
+* OpenGL部件一般由OpenGL程序+着色器组成。
+
+* 着色器中必须要知道，分为处理坐标的**顶点着色器**和处理颜色的**片元着色器**。
+
+* 使用顶点着色器接收顶点坐标（FloatBuffer）时，注意指针置0：`floatBuffer.position(0);`，不然只有第一次能读取到坐标。
+
+* 必须创建和使用**多个openGL程序**来进行不同图层的绘制，否则一些变量对象的变化，会影响之前的绘制。
+
+* OpenGL的坐标，是以绘制区域中心为原点，上、右为正方向，范围为[-1, -1, 1 ,1]的坐标轴。 
